@@ -1,5 +1,5 @@
 """
-inference_engine/queue.py
+inference_engine/request_queue.py
 
 A priority queue for managing incoming inference requests under three
 scheduling policies:
@@ -22,10 +22,14 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulingPolicy(Enum):
@@ -36,8 +40,8 @@ class SchedulingPolicy(Enum):
 
 @dataclass
 class Request:
-    id: str
     prompt: str
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     priority: int = 1          # higher = more important (only used by PRIORITY policy)
     timestamp: float = field(default_factory=time.monotonic)
     length: int = field(init=False)
@@ -48,6 +52,7 @@ class Request:
         # server has a tokenizer loaded — word count under/over-estimates
         # true token count, which is worth a sentence in your README.
         self.length = len(self.prompt.split())
+        logger.debug("Request created: %s", self)
 
     def __repr__(self) -> str:
         return f"Request(id={self.id!r}, len={self.length}, priority={self.priority})"
@@ -75,12 +80,14 @@ class RequestQueue:
             raise ValueError(f"Unknown policy: {self.policy}")
 
         heapq.heappush(self._heap, (key, request))
+        logger.debug("Pushed %s | queue depth now %d", request, len(self._heap))
 
     def pop(self) -> Optional[Request]:
         """Remove and return the next request to process, or None if empty."""
         if not self._heap:
             return None
         _, request = heapq.heappop(self._heap)
+        logger.debug("Popped %s | queue depth now %d", request, len(self._heap))
         return request
 
     def peek(self) -> Optional[Request]:
@@ -97,27 +104,29 @@ class RequestQueue:
 
 
 if __name__ == "__main__":
-    # Quick manual smoke test — run `python queue.py`
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # Quick manual smoke test — run `python request_queue.py`
     print("=== FIFO ===")
     q = RequestQueue(SchedulingPolicy.FIFO)
-    q.push(Request(id="a", prompt="first in"))
-    q.push(Request(id="b", prompt="second in"))
-    q.push(Request(id="c", prompt="third in"))
+    q.push(Request(prompt="first in"))
+    q.push(Request(prompt="second in"))
+    q.push(Request(prompt="third in"))
     while not q.is_empty():
         print(q.pop())
 
     print("\n=== SHORTEST_JOB_FIRST ===")
     q = RequestQueue(SchedulingPolicy.SHORTEST_JOB_FIRST)
-    q.push(Request(id="long", prompt="this is a much longer prompt with many words in it"))
-    q.push(Request(id="short", prompt="hi"))
-    q.push(Request(id="medium", prompt="a medium length prompt here"))
+    q.push(Request(prompt="this is a much longer prompt with many words in it"))
+    q.push(Request(prompt="hi"))
+    q.push(Request(prompt="a medium length prompt here"))
     while not q.is_empty():
         print(q.pop())
 
     print("\n=== PRIORITY ===")
     q = RequestQueue(SchedulingPolicy.PRIORITY)
-    q.push(Request(id="low", prompt="low priority", priority=1))
-    q.push(Request(id="high", prompt="high priority", priority=10))
-    q.push(Request(id="mid", prompt="mid priority", priority=5))
+    q.push(Request(prompt="low priority", priority=1))
+    q.push(Request(prompt="high priority", priority=10))
+    q.push(Request(prompt="mid priority", priority=5))
     while not q.is_empty():
         print(q.pop())

@@ -15,7 +15,7 @@ import threading
 import time
 
 from batcher import DynamicBatcher
-from queue import Request, RequestQueue, SchedulingPolicy
+from request_queue import Request, RequestQueue, SchedulingPolicy
 
 
 def test_batch_closes_on_size_when_requests_arrive_fast():
@@ -88,3 +88,17 @@ def test_batch_never_exceeds_max_size():
 
     assert len(batch) == 8
     assert len(q) == 42  # 50 - 8 remain on the queue
+
+
+def test_wait_time_metric_reflects_actual_queue_time():
+    """avg_wait_time_ms should roughly match how long requests actually sat
+    in the queue before the batch closed."""
+    q = RequestQueue(SchedulingPolicy.FIFO)
+    q.push(Request(id="only", prompt="x"))
+
+    batcher = DynamicBatcher(q, max_batch_size=8, max_wait_time_ms=40)
+    batch = batcher.form_batch()
+
+    # request waited ~40ms (the full timeout, since nothing else arrived)
+    assert 35 <= batch.avg_wait_time_ms <= 80
+    assert len(batch.wait_times_ms) == 1

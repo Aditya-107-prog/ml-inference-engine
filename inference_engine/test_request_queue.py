@@ -1,12 +1,12 @@
 """
-inference_engine/test_queue.py
+inference_engine/test_request_queue.py
 
-Run with: pytest test_queue.py -v
+Run with: pytest test_request_queue.py -v
 """
 
 import time
 
-from queue import Request, RequestQueue, SchedulingPolicy
+from request_queue import Request, RequestQueue, SchedulingPolicy
 
 
 def test_fifo_preserves_arrival_order():

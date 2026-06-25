@@ -25,10 +25,13 @@ that needs it.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
-from queue import Request, RequestQueue
+from request_queue import Request, RequestQueue
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +45,19 @@ class Batch:
     def __repr__(self) -> str:
         ids = [r.id for r in self.requests]
         return f"Batch(size={len(self.requests)}, ids={ids})"
+
+    @property
+    def wait_times_ms(self) -> list[float]:
+        """How long each request sat in the queue before this batch formed,
+        in milliseconds. Useful for the Week 4 dashboard and the Month 3
+        benchmarking suite -- capture it here while it's cheap, since this
+        information is gone the moment the batch is handed off to the model."""
+        return [(self.formed_at - r.timestamp) * 1000 for r in self.requests]
+
+    @property
+    def avg_wait_time_ms(self) -> float:
+        wait_times = self.wait_times_ms
+        return sum(wait_times) / len(wait_times) if wait_times else 0.0
 
 
 class DynamicBatcher:
@@ -84,9 +100,11 @@ class DynamicBatcher:
         first_request = self.queue.pop()
         batch_requests = [first_request]
         deadline = time.monotonic() + (self.max_wait_time_ms / 1000.0)
+        closed_reason = "max_batch_size"
 
         while len(batch_requests) < self.max_batch_size:
             if time.monotonic() >= deadline:
+                closed_reason = "timeout"
                 break  # latency budget exceeded, ship what we have
 
             next_request = self.queue.pop()
@@ -96,20 +114,27 @@ class DynamicBatcher:
 
             batch_requests.append(next_request)
 
-        return Batch(requests=batch_requests)
+        batch = Batch(requests=batch_requests)
+        logger.info(
+            "Batch closed (%s): size=%d avg_wait=%.1fms",
+            closed_reason, len(batch), batch.avg_wait_time_ms,
+        )
+        return batch
 
 
 if __name__ == "__main__":
     # Manual smoke test: simulate a producer trickling in requests while the
     # batcher tries to form batches.
-    from queue import SchedulingPolicy
+    from request_queue import SchedulingPolicy
     import threading
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     q = RequestQueue(SchedulingPolicy.FIFO)
 
     def producer():
         for i in range(10):
-            q.push(Request(id=f"req-{i}", prompt=f"prompt number {i}"))
+            q.push(Request(prompt=f"prompt number {i}"))
             time.sleep(0.01)  # ~100 requests/sec arrival rate
 
     threading.Thread(target=producer, daemon=True).start()
@@ -119,5 +144,5 @@ if __name__ == "__main__":
     collected = 0
     while collected < 10:
         batch = batcher.form_batch()
-        print(batch, f"(waited up to {batcher.max_wait_time_ms}ms)")
+        print(f"{batch} avg_wait={batch.avg_wait_time_ms:.1f}ms")
         collected += len(batch)
