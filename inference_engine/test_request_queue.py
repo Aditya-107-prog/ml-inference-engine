@@ -79,3 +79,25 @@ def test_peek_does_not_remove():
     peeked = q.peek()
     assert peeked.id == "a"
     assert len(q) == 1  # still there
+
+
+def test_concurrent_pushes_lose_nothing():
+    """20 threads each push 50 requests simultaneously. Without the lock,
+    concurrent heap mutation can corrupt internal state or drop pushes.
+    With the lock, every single push should land."""
+    import threading
+
+    q = RequestQueue(SchedulingPolicy.FIFO)
+    threads_count, pushes_per_thread = 20, 50
+
+    def worker():
+        for _ in range(pushes_per_thread):
+            q.push(Request(prompt="x"))
+
+    threads = [threading.Thread(target=worker) for _ in range(threads_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(q) == threads_count * pushes_per_thread
