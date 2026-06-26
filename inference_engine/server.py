@@ -33,8 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
-import time
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 
@@ -42,6 +42,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from batcher import Batch, DynamicBatcher
+from model_runner import QwenModelRunner, StubModelRunner
 from request_queue import Request, RequestQueue, SchedulingPolicy
 
 logger = logging.getLogger(__name__)
@@ -54,17 +55,31 @@ batcher = DynamicBatcher(queue, max_batch_size=8, max_wait_time_ms=50)
 pending_futures: dict[str, Future] = {}
 pending_lock = threading.Lock()  # protects pending_futures, separate from the queue's own lock
 
+# Which model backend to use. Defaults to the real Qwen model -- set
+# MODEL_BACKEND=stub (e.g. in test_server.py) to skip loading anything real,
+# which keeps the test suite instant and independent of GPU/network access.
+MODEL_BACKEND = os.environ.get("MODEL_BACKEND", "qwen")
+model_runner = None  # set during lifespan startup, once we know which backend to build
+
+
+def build_model_runner():
+    if MODEL_BACKEND == "stub":
+        logger.info("MODEL_BACKEND=stub -- using StubModelRunner (no real model loaded)")
+        return StubModelRunner()
+    logger.info("MODEL_BACKEND=qwen -- loading real Qwen model (this may take a while the first time)")
+    return QwenModelRunner()
+
 
 def process_batch(batch: Batch) -> None:
-    """Stub 'inference'. Real model call replaces this in a later week --
-    everything ELSE in this file (routing, batching, threading) stays the same
-    when that happens, which is the whole point of building it this way."""
-    for request, wait_ms in zip(batch.requests, batch.wait_times_ms):
-        time.sleep(0.01)  # pretend work, so batching visibly matters in timing
-        result = {
-            "response": f"[stub-echo] {request.prompt}",
-            "wait_time_ms": round(wait_ms, 1),
-        }
+    """Runs the whole batch through the model in ONE call -- this is the
+    actual payoff of batching. The model processes all prompts in parallel
+    on the GPU/CPU instead of one at a time, which is the entire reason the
+    queue and batcher exist."""
+    prompts = [r.prompt for r in batch.requests]
+    generated_texts = model_runner.generate_batch(prompts)
+
+    for request, wait_ms, text in zip(batch.requests, batch.wait_times_ms, generated_texts):
+        result = {"response": text, "wait_time_ms": round(wait_ms, 1)}
         with pending_lock:
             future = pending_futures.pop(request.id, None)
         if future is not None and not future.done():
@@ -90,6 +105,9 @@ def batch_worker_loop(stop_event: threading.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global model_runner
+    model_runner = build_model_runner()  # blocks startup until the model is ready -- intentional
+
     stop_event = threading.Event()
     worker = threading.Thread(target=batch_worker_loop, args=(stop_event,), daemon=True)
     worker.start()

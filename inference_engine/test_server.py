@@ -6,7 +6,15 @@ Run with: pytest test_server.py -v
 Uses httpx's ASGI transport to talk to the FastAPI app directly in-process --
 no real network socket needed, and asgi_lifespan triggers our startup/shutdown
 (the background batch worker thread) exactly like a real server boot would.
+
+IMPORTANT: forces MODEL_BACKEND=stub so this suite never tries to download or
+load the real Qwen model. Tests should be fast and runnable with no GPU and
+no network access -- that's the whole reason model_runner.py has a stub.
 """
+
+import os
+
+os.environ["MODEL_BACKEND"] = "stub"  # must be set before `from server import app`
 
 import asyncio
 
